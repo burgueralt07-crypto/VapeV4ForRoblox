@@ -41,7 +41,7 @@ end
 
 Spotify = vape:CreateOverlay({
 	Name = 'Spotify',
-	Icon = getvapeasset('newvape/assets/new/spotify.png'),
+	Icon = getvapeasset('vapeburguer/assets/new/spotify.png'),
 	Size = UDim2.fromOffset(16, 16),
 	Position = UDim2.fromOffset(12, 13),
 	Function = function(callback)
@@ -568,17 +568,17 @@ do
 	end
 
 	function SpotifyHandler:Start()
-		if not isfile('newvape/profiles/spotify.txt') then
+		if not isfile('vapeburguer/profiles/spotify.txt') then
 			notif('Spotify', 'Missing cookie! (dump sp_dc from the browser and write to profiles/spotify.txt)', 30, 'warning')
 			return
 		end
 
 		self.Headers = {
-			Cookie = 'sp_dc='..readfile('newvape/profiles/spotify.txt')..';',
+			Cookie = 'sp_dc='..readfile('vapeburguer/profiles/spotify.txt')..';',
 			['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:154.0) Gecko/20100101 Firefox/154.0'
 		}
 
-		local data = isfile('newvape/profiles/spotifydata.txt') and httpService:JSONDecode(readfile('newvape/profiles/spotifydata.txt')) or {expireTime = 0}
+		local data = isfile('vapeburguer/profiles/spotifydata.txt') and httpService:JSONDecode(readfile('vapeburguer/profiles/spotifydata.txt')) or {expireTime = 0}
 		if data.expireTime > os.time() then
 			self.Data = data
 		else
@@ -591,7 +591,7 @@ do
 
 			if success then
 				notif('Spotify', 'Logged in!', 10, 'info')
-				writefile('newvape/profiles/spotifydata.txt', httpService:JSONEncode(data))
+				writefile('vapeburguer/profiles/spotifydata.txt', httpService:JSONEncode(data))
 				self.Data = data
 			else
 				notif('Spotify', data, 10, 'alert')

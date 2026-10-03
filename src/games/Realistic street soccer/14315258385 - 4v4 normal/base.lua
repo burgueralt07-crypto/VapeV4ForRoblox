@@ -22,8 +22,20 @@ local getvapeasset = vape.Libraries.getvapeasset
 	Realistic Street Soccer - base (placeid 14315258385 / 4v4 normal)
 
 	Os modulos ficam na pasta 'Utility' e sao concatenados abaixo deste arquivo pelo bundler,
-	no mesmo escopo. Eles declaram suas proprias categorias ('realista' e 'farmRSS') e esperam
-	encontrar as seguintes variaveis por aqui:
+	no mesmo escopo. Este arquivo cria as categorias 'realista' e 'farmRSS' (que aparecem
+	apenas neste jogo) e os modulos esperam encontrar as seguintes variaveis por aqui:
 
 		run, vape, lplr, entitylib, inputService, runService, getvapeasset
 ]]
+
+-- Categorias proprias do Realistic Street Soccer (aparecem apenas neste jogo)
+vape:CreateCategory({
+	Name = 'realista',
+	Icon = getvapeasset('vapeburguer/assets/new/world.png'),
+	Size = UDim2.fromOffset(16, 14)
+})
+vape:CreateCategory({
+	Name = 'farmRSS',
+	Icon = getvapeasset('vapeburguer/assets/new/world.png'),
+	Size = UDim2.fromOffset(16, 14)
+})

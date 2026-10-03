@@ -23,7 +23,7 @@ local function Added(ent)
 	arrow.BackgroundTransparency = 1
 	arrow.BorderSizePixel = 0
 	arrow.Visible = false
-	arrow.Image = getvapeasset('newvape/assets/new/arrow.png')
+	arrow.Image = getvapeasset('vapeburguer/assets/new/arrow.png')
 	arrow.ImageColor3 = entitylib.getEntityColor(ent) or Color3.fromHSV(Color.Hue, Color.Sat, Color.Value)
 	arrow.Parent = Folder
 	Reference[ent] = arrow

@@ -24,7 +24,7 @@ local playersService = cloneref(game:GetService('Players'))
 local function downloadFile(path, func)
 	if not isfile(path) then
 		local suc, res = pcall(function()
-			return game:HttpGet('https://raw.githubusercontent.com/burgueralt07-crypto/VapeCompiled/'..readfile('newvape/profiles/commit.txt')..'/'..select(1, path:gsub('newvape/', '')), true)
+			return game:HttpGet('https://raw.githubusercontent.com/burgueralt07-crypto/VapeCompiled/'..readfile('vapeburguer/profiles/commit.txt')..'/'..select(1, path:gsub('vapeburguer/', '')), true)
 		end)
 		if not suc or res == '404: Not Found' then
 			error(res)
@@ -54,9 +54,9 @@ local function finishLoading()
 			local teleportScript = [[
 				shared.vapereload = true
 				if shared.VapeDeveloper then
-					loadstring(readfile('newvape/loader.lua'), 'loader')()
+					loadstring(readfile('vapeburguer/loader.lua'), 'loader')()
 				else
-					loadstring(game:HttpGet('https://raw.githubusercontent.com/burgueralt07-crypto/VapeCompiled/'..readfile('newvape/profiles/commit.txt')..'/loader.lua', true), 'loader')()
+					loadstring(game:HttpGet('https://raw.githubusercontent.com/burgueralt07-crypto/VapeCompiled/'..readfile('vapeburguer/profiles/commit.txt')..'/loader.lua', true), 'loader')()
 				end
 			]]
 
@@ -81,24 +81,24 @@ local function finishLoading()
 	end
 end
 
-if not isfile('newvape/profiles/gui.txt') then
-	writefile('newvape/profiles/gui.txt', 'new')
+if not isfile('vapeburguer/profiles/gui.txt') then
+	writefile('vapeburguer/profiles/gui.txt', 'new')
 end
-local gui = 'new'--readfile('newvape/profiles/gui.txt')
+local gui = 'new'--readfile('vapeburguer/profiles/gui.txt')
 
-if not isfolder('newvape/assets/'..gui) then
-	makefolder('newvape/assets/'..gui)
+if not isfolder('vapeburguer/assets/'..gui) then
+	makefolder('vapeburguer/assets/'..gui)
 end
-vape = loadstring(downloadFile('newvape/guis/'..gui..'.lua'), 'gui')()
+vape = loadstring(downloadFile('vapeburguer/guis/'..gui..'.lua'), 'gui')()
 shared.vape = vape
 
 if not shared.VapeIndependent then
-	loadstring(downloadFile('newvape/games/universal.lua'), 'universal')()
-	if isfile('newvape/games/'..game.PlaceId..'.lua') then
-		loadstring(readfile('newvape/games/'..game.PlaceId..'.lua'), tostring(game.PlaceId))(...)
+	loadstring(downloadFile('vapeburguer/games/universal.lua'), 'universal')()
+	if isfile('vapeburguer/games/'..game.PlaceId..'.lua') then
+		loadstring(readfile('vapeburguer/games/'..game.PlaceId..'.lua'), tostring(game.PlaceId))(...)
 	else
 		if not shared.VapeDeveloper then
-			local success, data = pcall(downloadFile, 'newvape/games/'..game.PlaceId..'.lua')
+			local success, data = pcall(downloadFile, 'vapeburguer/games/'..game.PlaceId..'.lua')
 			if success then
 				loadstring(data, tostring(game.PlaceId))(...)
 			end

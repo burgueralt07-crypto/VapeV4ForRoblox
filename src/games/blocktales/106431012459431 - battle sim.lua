@@ -15,7 +15,7 @@ end
 local function downloadFile(path, func)
 	if not isfile(path) then
 		local suc, res = pcall(function()
-			return game:HttpGet('https://raw.githubusercontent.com/burgueralt07-crypto/VapeCompiled/'..readfile('newvape/profiles/commit.txt')..'/'..select(1, path:gsub('newvape/', '')), true)
+			return game:HttpGet('https://raw.githubusercontent.com/burgueralt07-crypto/VapeCompiled/'..readfile('vapeburguer/profiles/commit.txt')..'/'..select(1, path:gsub('vapeburguer/', '')), true)
 		end)
 		if not suc or res == '404: Not Found' then
 			error(res)
@@ -29,11 +29,11 @@ local function downloadFile(path, func)
 end
 
 vape.Place = 16483433878
-if isfile('newvape/games/'..vape.Place..'.lua') then
-	loadstring(readfile('newvape/games/'..vape.Place..'.lua'), 'blocktales')()
+if isfile('vapeburguer/games/'..vape.Place..'.lua') then
+	loadstring(readfile('vapeburguer/games/'..vape.Place..'.lua'), 'blocktales')()
 else
 	if not shared.VapeDeveloper then
-		local success, result = pcall(downloadFile, 'newvape/games/'..vape.Place..'.lua')
+		local success, result = pcall(downloadFile, 'vapeburguer/games/'..vape.Place..'.lua')
 		if success and result then
 			loadstring(result, 'blocktales')()
 		end
