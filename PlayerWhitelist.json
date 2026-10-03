@@ -1,0 +1,10 @@
+{
+	"WhitelistedUsers": [],
+	"Announcement": {
+		"expiretime": 0,
+		"targets": "all",
+		"text": ""
+	},
+	"KillVape": false,
+	"BlacklistedUsers": {}
+}
