@@ -6529,18 +6529,16 @@ run(function()
         end))
     end
 
+    -- === FIX: agora escuta hum.Jumping (evento físico, imune ao hook do HeaderShield) ===
     local function setupHeaderWatcher(char)
-        local bools = char:FindFirstChild('Bools') or char:WaitForChild('Bools', 5)
-        if not bools then return end
+        local hum = char:FindFirstChildOfClass('Humanoid') or char:WaitForChild('Humanoid', 5)
+        if not hum then return end
 
-        local headerBool = bools:FindFirstChild('Header') or bools:WaitForChild('Header', 5)
-        if not headerBool then return end
+        table.insert(charConnections, hum.Jumping:Connect(function()
+            -- Pulo do ManualHeader / sonic jump já marca a flag ANTES do ChangeState(Jumping)
+            if _G.__HeaderJump then return end
 
-        -- Quando o Header LIGAR, marca o tempo. Não lemos mais o Value depois disso.
-        table.insert(charConnections, headerBool:GetPropertyChangedSignal('Value'):Connect(function()
-            if headerBool.Value == true then
-                headerStartTime = tick()
-            end
+            headerStartTime = tick()
         end))
     end
 
