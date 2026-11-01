@@ -762,6 +762,460 @@ run(function()
 end)
 
 run(function()
+    local AutoDribble
+    local DangerRadius
+    local HitboxWidth
+    local DribbleChance
+
+    local Players = game:GetService('Players')
+    local ReplicatedStorage = game:GetService('ReplicatedStorage')
+    local RunService = game:GetService('RunService')
+
+    local TACKLE_ANIM_ID = '14317040670'
+    local TACKLE_COOLDOWN = 0.8
+    -- No script do jogo (linha 351), o BodyVelocity do tackle dura exatamente 0.65s
+    local TACKLE_SLIDE_DURATION = 0.65 
+
+    local ActionRemote = ReplicatedStorage:WaitForChild('Remotes'):FindFirstChild('Action')
+
+    local cachedBall = nil
+    local cachedWeld = nil
+    local cachedCreator = nil
+    local ballConnections = {}
+    local heartbeatConn = nil
+    local renderConn = nil
+    local lastDribbleTime = 0
+
+    local enemyCache = {}
+    local enemyList = {}
+
+    local charCache = {
+        tackled = nil,
+        debounce = nil,
+        iframe = nil,
+        tackling = nil,
+        dribbleDebounce = nil,
+        header = nil,
+        powerShooting = nil,
+        freeKick = nil,
+        penalty = nil,
+        kickoff = nil,
+        apg = nil,
+        hpg = nil,
+    }
+
+    local cachedSliders = {
+        dangerRadius = 18,
+        dangerRadiusSq = 324,
+        hitboxWidth = 6.5,
+        dribbleChance = 100,
+    }
+
+    local function updateSliderCache()
+        local dr = DangerRadius.Value
+        cachedSliders.dangerRadius = dr
+        cachedSliders.dangerRadiusSq = dr * dr
+        cachedSliders.hitboxWidth = HitboxWidth.Value
+        cachedSliders.dribbleChance = DribbleChance.Value
+    end
+
+    local function findBall()
+        if cachedBall and cachedBall.Parent == workspace then
+            return cachedBall
+        end
+
+        for _, obj in workspace:GetChildren() do
+            if obj:IsA('BasePart') and obj.Name:lower() == 'ball' then
+                cachedBall = obj
+                cachedWeld = obj:FindFirstChild('playerWeld')
+                cachedCreator = obj:FindFirstChild('creator')
+                return obj
+            end
+        end
+
+        cachedBall = nil
+        cachedWeld = nil
+        cachedCreator = nil
+        return nil
+    end
+
+    local function iHaveBall()
+        if not cachedBall or cachedBall.Parent ~= workspace then
+            if not findBall() then return false end
+        end
+
+        local weld = cachedWeld
+        if not weld or weld.Parent ~= cachedBall then
+            weld = cachedBall:FindFirstChild('playerWeld')
+            cachedWeld = weld
+            if not weld then return false end
+        end
+
+        local part0 = weld.Part0
+        if not part0 or part0.Parent ~= lplr.Character then return false end
+
+        local creator = cachedCreator
+        if not creator or creator.Parent ~= cachedBall then
+            creator = cachedBall:FindFirstChild('creator')
+            cachedCreator = creator
+        end
+
+        return creator ~= nil and creator.Value == lplr
+    end
+
+    local function rebuildSelfCache()
+        local char = lplr.Character
+        if not char then return end
+
+        local bools = char:WaitForChild('Bools', 3)
+        local wsBools = workspace:FindFirstChild('Bools')
+
+        charCache.tackled = bools and bools:FindFirstChild('Tackled')
+        charCache.debounce = bools and bools:FindFirstChild('Debounce')
+        charCache.iframe = bools and bools:FindFirstChild('iframe')
+        charCache.tackling = bools and bools:FindFirstChild('Tackling')
+        charCache.dribbleDebounce = bools and bools:FindFirstChild('dribbleDebounce')
+        charCache.header = bools and bools:FindFirstChild('Header')
+        charCache.powerShooting = bools and bools:FindFirstChild('PowerShooting')
+        charCache.freeKick = wsBools and wsBools:FindFirstChild('FreeKick')
+        charCache.penalty = wsBools and wsBools:FindFirstChild('Penalty')
+        charCache.kickoff = wsBools and wsBools:FindFirstChild('Kickoff')
+        charCache.apg = wsBools and wsBools:FindFirstChild('APG')
+        charCache.hpg = wsBools and wsBools:FindFirstChild('HPG')
+    end
+
+    local function canDribble()
+        if not entitylib.isAlive then return false end
+        if tick() - lastDribbleTime < TACKLE_COOLDOWN then return false end
+        if charCache.dribbleDebounce and charCache.dribbleDebounce.Value then return false end
+        if charCache.tackled and charCache.tackled.Value then return false end
+        if charCache.debounce and charCache.debounce.Value then return false end
+        if charCache.iframe and charCache.iframe.Value then return false end
+        if charCache.tackling and charCache.tackling.Value then return false end
+        if charCache.header and charCache.header.Value then return false end
+        if charCache.powerShooting and charCache.powerShooting.Value then return false end
+        if charCache.apg and charCache.apg.Value == lplr then return false end
+        if charCache.hpg and charCache.hpg.Value == lplr then return false end
+        if charCache.freeKick and charCache.freeKick.Value then return false end
+        if charCache.penalty and charCache.penalty.Value then return false end
+        if charCache.kickoff and charCache.kickoff.Value then return false end
+        return true
+    end
+
+    local function doDribble()
+        if not ActionRemote then return end
+        if not canDribble() then return end
+        if not iHaveBall() then return end
+
+        local chance = cachedSliders.dribbleChance
+        if chance < 100 and math.random(1, 100) > chance then
+            lastDribbleTime = tick()
+            return
+        end
+
+        lastDribbleTime = tick()
+        ActionRemote:FireServer('Deke')
+    end
+
+    -- Verifica matematicamente se a linha reta do carrinho inimigo vai acertar você
+    local function willTackleHitMe(enemyRoot, myX, myZ)
+        if not enemyRoot or not enemyRoot.Parent then return false end
+
+        local enemyPos = enemyRoot.Position
+        -- Vetor do Inimigo até Você
+        local dx = myX - enemyPos.X
+        local dz = myZ - enemyPos.Z
+        local distSq = dx * dx + dz * dz
+
+        -- Fora do alcance máximo configurado
+        if distSq > cachedSliders.dangerRadiusSq then return false end
+
+        -- Direção para onde o inimigo está deslizando (LookVector no plano XZ)
+        local look = enemyRoot.CFrame.LookVector
+        local lookX, lookZ = look.X, look.Z
+        local lookMagSq = lookX * lookX + lookZ * lookZ
+
+        if lookMagSq < 0.0001 then return false end
+        local invLookMag = 1 / math.sqrt(lookMagSq)
+        lookX = lookX * invLookMag
+        lookZ = lookZ * invLookMag
+
+        -- 1. Projeção Frontal (Produto Escalar):
+        -- Positivo = você está na frente do carrinho dele.
+        -- Negativo = ele deu carrinho de costas / para longe de você.
+        local forwardDist = dx * lookX + dz * lookZ
+
+        -- Se ele está dando carrinho para trás de onde você está, ignora!
+        if forwardDist < -1.0 then return false end
+
+        -- Se a distância final que falta para te alcançar for maior que o alcance restante do slide (~26 studs max)
+        if forwardDist > cachedSliders.dangerRadius then return false end
+
+        -- 2. Distância Lateral (Produto Vetorial 2D):
+        -- Calcula a quantos studs de distância lateral a linha do carrinho vai passar do seu centro
+        local lateralDist = math.abs(dx * lookZ - dz * lookX)
+
+        -- Se a linha do carrinho passar dentro da largura da hitbox, vai te acertar!
+        return lateralDist <= cachedSliders.hitboxWidth
+    end
+
+    -- FAST-PATH: Chamado no exato milissegundo em que o pacote do tackle chega
+    local function tryFastDribble(cache)
+        local myRoot = entitylib.character and entitylib.character.RootPart
+        if not myRoot then return end
+
+        updateSliderCache()
+        local myPos = myRoot.Position
+
+        if willTackleHitMe(cache.root, myPos.X, myPos.Z) then
+            doDribble()
+        end
+    end
+
+    -- Verifica apenas inimigos que JÁ ESTÃO dando carrinho (ex: começaram longe e deslizaram até você)
+    local function checkActiveTacklers()
+        if not iHaveBall() then return end
+        if not canDribble() then return end
+
+        local myRoot = entitylib.character and entitylib.character.RootPart
+        if not myRoot then return end
+
+        updateSliderCache()
+        local myPos = myRoot.Position
+        local myX, myZ = myPos.X, myPos.Z
+        local now = tick()
+
+        for i = 1, #enemyList do
+            local cache = enemyList[i]
+            local isTackling = (cache.tackling and cache.tackling.Value) or ((now - cache.animSince) < TACKLE_SLIDE_DURATION)
+
+            if isTackling and willTackleHitMe(cache.root, myX, myZ) then
+                doDribble()
+                return
+            end
+        end
+    end
+
+    local function rebuildEnemyList()
+        table.clear(enemyList)
+        for plr, cache in enemyCache do
+            if plr.Team ~= lplr.Team and cache.root and cache.root.Parent then
+                table.insert(enemyList, cache)
+            end
+        end
+    end
+
+    local function disconnectEnemyConnections(cache)
+        if not cache then return end
+        if cache.animConnection then cache.animConnection:Disconnect() end
+        if cache.tacklingConnection then cache.tacklingConnection:Disconnect() end
+    end
+
+    local function cacheEnemy(plr)
+        if plr == lplr then return end
+
+        local function setup(char)
+            local hum = char:WaitForChild('Humanoid', 5)
+            local root = char:WaitForChild('HumanoidRootPart', 5)
+            local bools = char:WaitForChild('Bools', 5)
+            if not hum or not root or not bools then return end
+
+            local animator = hum:FindFirstChildOfClass('Animator') or hum:WaitForChild('Animator', 3)
+            local tacklingBool = bools:FindFirstChild('Tackling')
+
+            local cache = {
+                player = plr,
+                char = char,
+                root = root,
+                bools = bools,
+                tackling = tacklingBool,
+                animSince = 0,
+                animConnection = nil,
+                tacklingConnection = nil,
+            }
+            enemyCache[plr] = cache
+
+            -- Detector 1: Animator (Execução imediata no frame zero)
+            if animator then
+                cache.animConnection = animator.AnimationPlayed:Connect(function(track)
+                    if not AutoDribble.Enabled or plr.Team == lplr.Team then return end
+
+                    local anim = track.Animation
+                    if not anim then return end
+
+                    if string.find(anim.AnimationId, TACKLE_ANIM_ID, 1, true) then
+                        cache.animSince = tick()
+                        tryFastDribble(cache)
+                    end
+                end)
+            end
+
+            -- Detector 2: Bool Tackling (Execução imediata caso replique antes da animação)
+            if tacklingBool then
+                cache.tacklingConnection = tacklingBool:GetPropertyChangedSignal('Value'):Connect(function()
+                    if not AutoDribble.Enabled or plr.Team == lplr.Team then return end
+                    if tacklingBool.Value == true then
+                        cache.animSince = tick()
+                        tryFastDribble(cache)
+                    end
+                end)
+            end
+
+            rebuildEnemyList()
+        end
+
+        if plr.Character then
+            task.spawn(setup, plr.Character)
+        end
+
+        plr.CharacterAdded:Connect(function(char)
+            disconnectEnemyConnections(enemyCache[plr])
+            enemyCache[plr] = nil
+            rebuildEnemyList()
+            task.wait(0.2)
+            setup(char)
+        end)
+
+        plr:GetPropertyChangedSignal('Team'):Connect(rebuildEnemyList)
+    end
+
+    local function setupBallWatcher()
+        for _, conn in ballConnections do
+            conn:Disconnect()
+        end
+        table.clear(ballConnections)
+
+        local ball = findBall()
+        if not ball then return end
+
+        table.insert(ballConnections, ball.ChildAdded:Connect(function(child)
+            if child.Name == 'playerWeld' and child:IsA('Weld') then
+                cachedWeld = child
+                local rootPart = child.Part0
+                if rootPart and rootPart.Parent == lplr.Character then
+                    -- Se pegou a bola enquanto alguém já está deslizando na sua direção, dribla na hora
+                    checkActiveTacklers()
+                end
+            end
+        end))
+
+        table.insert(ballConnections, ball.ChildRemoved:Connect(function(child)
+            if child == cachedWeld or child.Name == 'playerWeld' then
+                cachedWeld = nil
+            end
+        end))
+    end
+
+    local function startSlideTracker()
+        if heartbeatConn then heartbeatConn:Disconnect() end
+        if renderConn then renderConn:Disconnect() end
+
+        -- 1. Checa no início do frame (Rede / Interpolação)
+        renderConn = RunService.RenderStepped:Connect(function()
+            if not AutoDribble.Enabled then return end
+            checkActiveTacklers()
+        end)
+
+        -- 2. Checa no final do frame (Pós-Física / BodyVelocity)
+        heartbeatConn = RunService.Heartbeat:Connect(function()
+            if not AutoDribble.Enabled then return end
+            checkActiveTacklers()
+        end)
+    end
+
+    AutoDribble = vape.Categories.realista:CreateModule({
+        Name = 'NGADribble',
+        Function = function(callback)
+            if callback then
+                if not ActionRemote then
+                    AutoDribble:Toggle()
+                    return
+                end
+
+                rebuildSelfCache()
+                updateSliderCache()
+                setupBallWatcher()
+
+                enemyCache = {}
+                table.clear(enemyList)
+
+                for _, plr in Players:GetPlayers() do
+                    cacheEnemy(plr)
+                end
+
+                AutoDribble:Clean(Players.PlayerAdded:Connect(cacheEnemy))
+
+                AutoDribble:Clean(Players.PlayerRemoving:Connect(function(plr)
+                    disconnectEnemyConnections(enemyCache[plr])
+                    enemyCache[plr] = nil
+                    rebuildEnemyList()
+                end))
+
+                AutoDribble:Clean(lplr.CharacterAdded:Connect(function()
+                    task.wait(0.3)
+                    rebuildSelfCache()
+                    cachedBall = nil
+                    cachedWeld = nil
+                    cachedCreator = nil
+                    setupBallWatcher()
+                end))
+
+                AutoDribble:Clean(lplr:GetPropertyChangedSignal('Team'):Connect(rebuildEnemyList))
+
+                startSlideTracker()
+            else
+                if heartbeatConn then
+                    heartbeatConn:Disconnect()
+                    heartbeatConn = nil
+                end
+
+                if renderConn then
+                    renderConn:Disconnect()
+                    renderConn = nil
+                end
+
+                for _, conn in ballConnections do
+                    conn:Disconnect()
+                end
+                table.clear(ballConnections)
+
+                for _, cache in enemyCache do
+                    disconnectEnemyConnections(cache)
+                end
+
+                enemyCache = {}
+                table.clear(enemyList)
+                cachedBall = nil
+                cachedWeld = nil
+                cachedCreator = nil
+            end
+        end,
+        Tooltip = 'Dribla apenas quando o inimigo da tackle na sua direcao.'
+    })
+
+    DangerRadius = AutoDribble:CreateSlider({
+        Name = 'Danger Radius',
+        Min = 5, Max = 35, Default = 18,
+        Suffix = function(val) return val == 1 and 'stud' or 'studs' end,
+        Tooltip = 'Distancia maxima para reagir a um tackle.'
+    })
+
+    HitboxWidth = AutoDribble:CreateSlider({
+        Name = 'Hitbox Width',
+        Min = 3, Max = 12, Default = 6.5, Decimal = 10,
+        Suffix = function(val) return ' studs' end,
+        Tooltip = 'Largura do corredor de colisao. Menor = mais rigoroso com a mira do inimigo.'
+    })
+
+    DribbleChance = AutoDribble:CreateSlider({
+        Name = 'Dribble Chance',
+        Min = 0, Max = 100, Default = 100,
+        Suffix = function(val) return '%' end,
+        Tooltip = '% de chance do drible disparar.'
+    })
+end)
+
+run(function()
     local BallTP
     local MovementMode
     local Length
