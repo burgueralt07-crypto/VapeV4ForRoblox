@@ -992,283 +992,490 @@ run(function()
 end)
 
 run(function()
-    local ManualHeaderTackle
-    local ServerMode
-    local AutoAim
-    local AimRange
-    local OnlyWithoutBall
+    local HeaderShield
+    local Mode
+    local OnlyWithBall
+    local ReactiveMode
+    local ReactiveDistance
+    local ShootBypass
+    local AutoActivate
+    local Distance
 
     local Players = game:GetService('Players')
     local ReplicatedStorage = game:GetService('ReplicatedStorage')
-    local Debris = game:GetService('Debris')
+    local UserInputService = game:GetService('UserInputService')
+    local runService = game:GetService('RunService')
 
-    local lplr = lplr or Players.LocalPlayer
-
-    local TACKLE_FORCE_DURATION = 0.65
-    local FANS_TEAM_COLOR = 199
+    local TACKLE_ANIM_ID = '14317040670'
+    local REACTION_WINDOW = 0.8
+    local BUFF_DURATION_ESTIMATE = 1.0
+    local FIRE_COOLDOWN = 0.08
     local HEADER_COOLDOWN = 2.8
-
-    -- Só a velocidade do tackle muda; PULO existe nos dois modos agora
-    local MODE_CONFIG = {
-        ['4v4'] = { tackleSpeed = 40 },
-        ['7v7'] = { tackleSpeed = 50 },
-    }
 
     local ActionRemote = ReplicatedStorage:WaitForChild('Remotes'):FindFirstChild('Action')
 
-    _G.__HeaderCooldownState = _G.__HeaderCooldownState or { lastFire = 0 }
-    local sharedState = _G.__HeaderCooldownState
+    -- Comunicação global com AerialReach e Sonic Jump
+    _G.__HeaderShieldActive = false
+    _G.__LastShieldHeaderTime = 0
 
-    _G.__HeaderJump = false
+    local mainConn = nil
+    local charConn = nil
+    local headerChangedConn = nil
+    local humStateConn = nil
+    local humFloorConn = nil
+    local jumpReqConn = nil
+    local enemyWatchers = {}
 
+    local cachedChar = nil
+    local cachedRoot = nil
+    local cachedHum = nil
     local cachedBall = nil
-    local cachedWeld = nil
+    local cachedBallWeld = nil
+    local headerBool = nil
 
-    local charCache = {
-        tackleDebounce = nil,
-    }
+    local enemyList = {}
 
-    local function rebuildCache()
-        local char = lplr.Character
-        if not char then return end
+    local isJumping = false
+    local shieldingActive = false
+    local lastFire = 0
+    local tackleDetectedUntil = 0
+    local buffExpiresAt = 0
 
-        local bools = char:FindFirstChild('Bools')
-        if not bools then return end
+    local indexHookInstalled = false
+    local oldIndex = nil
 
-        charCache.tackleDebounce = bools:FindFirstChild('TackleDebounce')
+    local function getRealHeaderValue()
+        if not headerBool then return false end
+        if oldIndex then
+            return oldIndex(headerBool, 'Value')
+        end
+        return headerBool.Value
     end
 
-    local function getConfig()
-        return MODE_CONFIG[ServerMode.Value] or MODE_CONFIG['4v4']
-    end
-
-    local function isFan()
-        local color = lplr.TeamColor and lplr.TeamColor.Number
-        return color == FANS_TEAM_COLOR
-    end
-
-    local function isHeaderOnCooldown()
-        return tick() - sharedState.lastFire < HEADER_COOLDOWN
-    end
-
-    local function isTackleOnCooldown()
-        return charCache.tackleDebounce and charCache.tackleDebounce.Value
-    end
-
-    local function findBall()
-        if cachedBall and cachedBall.Parent == workspace then
+    local function getBall()
+        if cachedBall and cachedBall.Parent then
             return cachedBall
         end
+
+        cachedBall = nil
+        cachedBallWeld = nil
 
         for _, obj in ipairs(workspace:GetChildren()) do
             if obj:IsA('BasePart') and obj.Name:lower() == 'ball' then
                 cachedBall = obj
-                cachedWeld = nil
                 return obj
             end
         end
 
-        cachedBall = nil
-        cachedWeld = nil
         return nil
     end
 
-    local function iHaveBall()
-        local ball = findBall()
+    local function hasBall()
+        local ball = getBall()
         if not ball then return false end
 
-        if not cachedWeld or cachedWeld.Parent ~= ball then
-            cachedWeld = ball:FindFirstChild('playerWeld')
+        if not cachedBallWeld or cachedBallWeld.Parent ~= ball then
+            cachedBallWeld = ball:FindFirstChild('playerWeld')
         end
 
-        if not cachedWeld or not cachedWeld:IsA('Weld') then
-            cachedWeld = nil
+        if not cachedBallWeld or not cachedBallWeld:IsA('Weld') then
+            cachedBallWeld = nil
             return false
         end
 
-        local rootPart = cachedWeld.Part0
+        local rootPart = cachedBallWeld.Part0
         if not rootPart then return false end
 
-        return rootPart.Parent == lplr.Character
+        return rootPart.Parent == cachedChar
     end
 
-    local function abortModule()
-        task.defer(function()
-            if ManualHeaderTackle.Enabled then
-                ManualHeaderTackle:Toggle()
+    local function hasEnemyNear()
+        if not cachedRoot then return false end
+
+        local myPos = cachedRoot.Position
+        local myTeam = lplr.Team
+        local rangeSq = Distance.Value * Distance.Value
+
+        for i = 1, #enemyList do
+            local plr = enemyList[i]
+            if plr.Team == myTeam then continue end
+
+            local char = plr.Character
+            if not char then continue end
+
+            local enemyRoot = char:FindFirstChild('HumanoidRootPart')
+            if not enemyRoot then continue end
+
+            local diff = enemyRoot.Position - myPos
+            if (diff.X * diff.X + diff.Y * diff.Y + diff.Z * diff.Z) <= rangeSq then
+                return true
             end
-        end)
+        end
+        return false
     end
 
-    local function aimAtBall(ball, dist)
-        local myRoot = (entitylib and entitylib.isAlive and entitylib.character and entitylib.character.RootPart)
-            or (lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart'))
-        if not myRoot or not ball then return end
-
-        local config = getConfig()
-        local timeToReach = dist / config.tackleSpeed
-        local ballVel = ball.AssemblyLinearVelocity or Vector3.zero
-        local predictedPos = ball.Position + (ballVel * timeToReach)
-
-        local lookAtPos = Vector3.new(predictedPos.X, myRoot.Position.Y, predictedPos.Z)
-        myRoot.CFrame = CFrame.lookAt(myRoot.Position, lookAtPos)
-    end
-
-    local function watchLanding(char)
-        local hum = char and char:FindFirstChildOfClass('Humanoid')
-        if not hum then return end
-
-        local conn
-        conn = hum.StateChanged:Connect(function(_, new)
-            if new == Enum.HumanoidStateType.Landed
-            or new == Enum.HumanoidStateType.Running
-            or new == Enum.HumanoidStateType.RunningNoPhysics then
-                _G.__HeaderJump = false
-                _G.__AerialReachActive = false
-                if conn then conn:Disconnect() end
-            end
-        end)
-    end
-
-    local function doHeader()
-        local char = lplr.Character
-        local hum = char and char:FindFirstChildOfClass('Humanoid')
-        local root = char and char:FindFirstChild('HumanoidRootPart')
-        if not hum or not root then return end
-
-        -- Sinaliza header REAL (BallMagnet / HeaderShield / AutoJuggle)
-        _G.__HeaderJump = true
-        _G.__AerialReachActive = true
-        _G.__LastAerialReachTime = tick()
-
-        -------------------------------------------------
-        -- 4v4 E 7v7: Pulo nativo JumpPower = 35 (update do jogo)
-        -------------------------------------------------
-        watchLanding(char)
-
-        hum.JumpPower = 35
-        hum:ChangeState(Enum.HumanoidStateType.Jumping)
-        hum.Jump = true
-
+    local function fireHeader()
         ActionRemote:FireServer('Header')
-        sharedState.lastFire = tick()
+        lastFire = tick()
+        _G.__LastShieldHeaderTime = tick()
+        buffExpiresAt = tick() + BUFF_DURATION_ESTIMATE
+    end
 
-        task.spawn(function()
-            task.wait(0.2)
-            if hum and hum.Parent then
-                hum.JumpPower = 0
+    local function isPlayerAirborne()
+        return isJumping or _G.__HeaderJump == true
+    end
+
+    local function shouldBeActive()
+        if not cachedChar or not cachedChar.Parent then return false end
+        if not cachedHum or cachedHum.Health <= 0 then return false end
+        if not headerBool then return false end
+
+        -- =========================================================================
+        -- 🚀 MODO ONLY JUMP:
+        -- Ignora a trava do AerialReach para combar com o Sonic Jump sem interrupção!
+        -- =========================================================================
+        if Mode.Value == 'Only Jump' then
+            if OnlyWithBall.Enabled and not hasBall() then return false end
+            return isPlayerAirborne()
+        end
+
+        -- =========================================================================
+        -- 🛡️ MODO NORMAL:
+        -- Mantém a trava padrão com AerialReach para economizar chamadas
+        -- =========================================================================
+        if _G.__AerialReachActive then return false end
+        if tick() - (_G.__LastAerialReachTime or 0) < 1.2 then return false end
+
+        if OnlyWithBall.Enabled and not hasBall() then return false end
+
+        if ReactiveMode.Enabled then
+            return tick() <= tackleDetectedUntil
+        end
+
+        if AutoActivate.Enabled and not hasEnemyNear() then return false end
+
+        return true
+    end
+
+    local function checkInstantTrigger()
+        if shouldBeActive() and not getRealHeaderValue() and (tick() - lastFire >= FIRE_COOLDOWN) then
+            fireHeader()
+        end
+    end
+
+    local function setupHumListeners(hum)
+        if humStateConn then humStateConn:Disconnect() end
+        if humFloorConn then humFloorConn:Disconnect() end
+
+        humStateConn = hum.StateChanged:Connect(function(oldState, newState)
+            if newState == Enum.HumanoidStateType.Jumping then
+                isJumping = true
+                if Mode.Value == 'Only Jump' then
+                    task.spawn(checkInstantTrigger)
+                end
+            elseif newState == Enum.HumanoidStateType.Landed 
+                or newState == Enum.HumanoidStateType.Running 
+                or newState == Enum.HumanoidStateType.RunningNoPhysics then
+                isJumping = false
+            end
+        end)
+
+        -- Fail-safe instantâneo ao tocar no chão
+        humFloorConn = hum:GetPropertyChangedSignal("FloorMaterial"):Connect(function()
+            if hum.FloorMaterial ~= Enum.Material.Air then
+                isJumping = false
             end
         end)
     end
 
-    local function doTackle()
-        local root = (entitylib and entitylib.isAlive and entitylib.character and entitylib.character.RootPart)
-            or (lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart'))
-        if not root or not ActionRemote then return end
+    local function rebuildCharCache()
+        cachedChar = lplr.Character
+        if not cachedChar then
+            cachedRoot = nil
+            cachedHum = nil
+            headerBool = nil
+            isJumping = false
+            return
+        end
 
-        local config = getConfig()
+        cachedRoot = cachedChar:FindFirstChild('HumanoidRootPart')
+        cachedHum = cachedChar:FindFirstChildOfClass('Humanoid')
+        local bools = cachedChar:FindFirstChild('Bools')
+        headerBool = bools and bools:FindFirstChild('Header')
 
-        ActionRemote:FireServer('TackIe')
-
-        local bv = Instance.new('BodyVelocity')
-        bv.Velocity = root.CFrame.LookVector * config.tackleSpeed
-        bv.MaxForce = Vector3.new(50000000, 0, 50000000)
-        bv.Parent = root
-        Debris:AddItem(bv, TACKLE_FORCE_DURATION)
-
-        local gyro = Instance.new('BodyGyro')
-        gyro.Name = 'TackleGyro'
-        gyro.P = 950000
-        gyro.MaxTorque = Vector3.new(0, 100000, 0)
-        gyro.CFrame = root.CFrame
-        gyro.Parent = root
-        Debris:AddItem(gyro, TACKLE_FORCE_DURATION)
+        if cachedHum then
+            setupHumListeners(cachedHum)
+        end
     end
 
-    local function tryAutoAim()
-        if not AutoAim.Enabled then return end
-
-        local ball = findBall()
-        local myRoot = (entitylib and entitylib.isAlive and entitylib.character and entitylib.character.RootPart)
-            or (lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart'))
-        if not ball or not myRoot then return end
-
-        local dist = (ball.Position - myRoot.Position).Magnitude
-        if dist > AimRange.Value then return end
-
-        aimAtBall(ball, dist)
+    local function addEnemy(plr)
+        if plr == lplr then return end
+        for i = 1, #enemyList do
+            if enemyList[i] == plr then return end
+        end
+        table.insert(enemyList, plr)
     end
 
-    ManualHeaderTackle = vape.Categories.realista:CreateModule({
-        Name = 'sonic jump',
+    local function removeEnemy(plr)
+        for i = 1, #enemyList do
+            if enemyList[i] == plr then
+                table.remove(enemyList, i)
+                return
+            end
+        end
+    end
+
+    local function watchEnemyTackles(plr)
+        if plr == lplr then return end
+        if enemyWatchers[plr] then return end
+
+        local function setup(char)
+            local hum = char:WaitForChild('Humanoid', 5)
+            if not hum then return end
+
+            local conn = hum.AnimationPlayed:Connect(function(track)
+                if not HeaderShield.Enabled then return end
+                if Mode.Value == 'Only Jump' then return end
+                if plr.Team == lplr.Team then return end
+
+                local anim = track.Animation
+                if not anim or not anim.AnimationId:find(TACKLE_ANIM_ID) then return end
+
+                if not cachedRoot then return end
+                local enemyRoot = char:FindFirstChild('HumanoidRootPart')
+                if not enemyRoot then return end
+
+                local diff = enemyRoot.Position - cachedRoot.Position
+                local distSq = diff.X * diff.X + diff.Y * diff.Y + diff.Z * diff.Z
+
+                local range = ReactiveMode.Enabled and ReactiveDistance.Value or Distance.Value
+                if distSq > range * range then return end
+
+                tackleDetectedUntil = tick() + REACTION_WINDOW
+            end)
+
+            enemyWatchers[plr] = conn
+        end
+
+        if plr.Character then task.spawn(setup, plr.Character) end
+        plr.CharacterAdded:Connect(setup)
+    end
+
+    local function installShootBypass()
+        if indexHookInstalled then return end
+        if not hookmetamethod then return end
+
+        indexHookInstalled = true
+
+        oldIndex = hookmetamethod(game, '__index', newcclosure(function(self, key)
+            if HeaderShield and HeaderShield.Enabled
+               and ShootBypass and ShootBypass.Enabled
+               and key == 'Value'
+               and self == headerBool then
+
+                -- No modo Normal, respeita o AerialReach original; no Only Jump, o bypass sempre atua!
+                if Mode.Value ~= 'Only Jump' and _G.__AerialReachActive then
+                    return oldIndex(self, key)
+                end
+
+                return false
+            end
+
+            return oldIndex(self, key)
+        end))
+    end
+
+    local function setupHeaderWatcher()
+        if headerChangedConn then headerChangedConn:Disconnect() end
+        if not headerBool then return end
+
+        headerChangedConn = headerBool.Changed:Connect(function(newValue)
+            if not HeaderShield.Enabled then return end
+
+            if newValue == true then
+                buffExpiresAt = tick() + BUFF_DURATION_ESTIMATE
+                return
+            end
+
+            if not shouldBeActive() then return end
+            if tick() - lastFire < HEADER_COOLDOWN then return end
+            fireHeader()
+        end)
+    end
+
+    HeaderShield = vape.Categories.realista:CreateModule({
+        Name = 'HeaderShield',
         Function = function(callback)
-            if not callback then return end
+            _G.__HeaderShieldActive = callback == true
 
-            if not ActionRemote then
-                abortModule()
-                return
+            if callback then
+                if not ActionRemote or not hookmetamethod then
+                    HeaderShield:Toggle()
+                    return
+                end
+
+                enemyList = {}
+                enemyWatchers = {}
+                isJumping = false
+
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    addEnemy(plr)
+                end
+
+                rebuildCharCache()
+
+                lastFire = 0
+                tackleDetectedUntil = 0
+                cachedBall = nil
+                cachedBallWeld = nil
+                shieldingActive = false
+                buffExpiresAt = 0
+
+                installShootBypass()
+                setupHeaderWatcher()
+
+                -- Gatilho de input antecipado
+                jumpReqConn = UserInputService.JumpRequest:Connect(function()
+                    if not HeaderShield.Enabled or Mode.Value ~= 'Only Jump' then return end
+                    if cachedHum and cachedHum.FloorMaterial ~= Enum.Material.Air and cachedHum.Health > 0 then
+                        isJumping = true
+                        task.spawn(checkInstantTrigger)
+                    end
+                end)
+
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    watchEnemyTackles(plr)
+                end
+
+                HeaderShield:Clean(Players.PlayerAdded:Connect(function(plr)
+                    addEnemy(plr)
+                    watchEnemyTackles(plr)
+                end))
+
+                HeaderShield:Clean(Players.PlayerRemoving:Connect(function(plr)
+                    if enemyWatchers[plr] then
+                        enemyWatchers[plr]:Disconnect()
+                        enemyWatchers[plr] = nil
+                    end
+                    removeEnemy(plr)
+                end))
+
+                charConn = lplr.CharacterAdded:Connect(function()
+                    task.wait(0.5)
+                    if HeaderShield.Enabled then
+                        rebuildCharCache()
+                        setupHeaderWatcher()
+                        cachedBall = nil
+                        cachedBallWeld = nil
+                    end
+                end)
+
+                mainConn = runService.Heartbeat:Connect(function()
+                    if not HeaderShield.Enabled then return end
+
+                    if not cachedChar or not cachedChar.Parent then
+                        rebuildCharCache()
+                        shieldingActive = false
+                        return
+                    end
+
+                    if not cachedHum or cachedHum.Health <= 0 then
+                        shieldingActive = false
+                        return
+                    end
+
+                    if not headerBool then
+                        rebuildCharCache()
+                        return
+                    end
+
+                    shieldingActive = shouldBeActive()
+
+                    if not shieldingActive then return end
+                    if getRealHeaderValue() then return end
+                    if tick() - lastFire < FIRE_COOLDOWN then return end
+
+                    fireHeader()
+                end)
+            else
+                _G.__HeaderShieldActive = false
+
+                if mainConn then mainConn:Disconnect() mainConn = nil end
+                if headerChangedConn then headerChangedConn:Disconnect() headerChangedConn = nil end
+                if charConn then charConn:Disconnect() charConn = nil end
+                if humStateConn then humStateConn:Disconnect() humStateConn = nil end
+                if humFloorConn then humFloorConn:Disconnect() humFloorConn = nil end
+                if jumpReqConn then jumpReqConn:Disconnect() jumpReqConn = nil end
+
+                for _, conn in pairs(enemyWatchers) do
+                    conn:Disconnect()
+                end
+                enemyWatchers = {}
+                enemyList = {}
+
+                isJumping = false
+                shieldingActive = false
+                buffExpiresAt = 0
+                cachedBall = nil
+                cachedBallWeld = nil
             end
-
-            if isFan() then
-                abortModule()
-                return
-            end
-
-            rebuildCache()
-
-            if OnlyWithoutBall.Enabled and iHaveBall() then
-                abortModule()
-                return
-            end
-
-            if isHeaderOnCooldown() or isTackleOnCooldown() then
-                abortModule()
-                return
-            end
-
-            tryAutoAim()
-            doHeader()
-            doTackle()
-
-            abortModule()
         end,
-        Tooltip = 'Header + Tackle. Pulo 35 nativo em 4v4 e 7v7. Tackle 40 (4v4) / 50 (7v7).'
+        Tooltip = 'Garante invencibilidade via Header. Suporta modo Normal ou reativo apenas ao Pular.'
     })
 
-    lplr.CharacterAdded:Connect(function()
-        _G.__HeaderJump = false
-        _G.__AerialReachActive = false
-    end)
-
-    ServerMode = ManualHeaderTackle:CreateDropdown({
-        Name = 'Game Mode',
-        List = {'4v4', '7v7'},
-        Default = '4v4',
-        Tooltip = 'Só muda velocidade do tackle: 4v4 = 40 | 7v7 = 50. Pulo 35 nos dois.'
+    Mode = HeaderShield:CreateDropdown({
+        Name = 'Mode',
+        List = {'Normal', 'Only Jump'},
+        Default = 'Normal',
+        Tooltip = 'Normal: regras habituais de proximidade/tackle | Only Jump: ativa instantaneamente no pulo e comba com Sonic Jump'
     })
 
-    AutoAim = ManualHeaderTackle:CreateToggle({
-        Name = 'Auto Aim (na bola)',
+    OnlyWithBall = HeaderShield:CreateToggle({
+        Name = 'Only With Ball',
         Default = true,
-        Function = function(callback)
-            if AimRange and AimRange.Object then
-                AimRange.Object.Visible = callback
+        Tooltip = 'Só ativa quando você estiver com a bola (desligue se quiser usar o Sonic Jump defensivamente sem posse)'
+    })
+
+    ReactiveMode = HeaderShield:CreateToggle({
+        Name = 'Reactive Mode',
+        Default = false,
+        Tooltip = '[Modo Normal] Ativa apenas quando detecta tackle próximo',
+        Function = function(val)
+            if ReactiveDistance and ReactiveDistance.Object then
+                ReactiveDistance.Object.Visible = val
             end
         end,
-        Tooltip = 'Vira o corpo pra bola antes de disparar'
     })
 
-    AimRange = ManualHeaderTackle:CreateSlider({
-        Name = 'Aim Range',
-        Min = 5, Max = 50, Default = 20,
+    ReactiveDistance = HeaderShield:CreateSlider({
+        Name = 'Reactive Distance',
+        Min = 5, Max = 30, Default = 15,
+        Visible = false,
         Suffix = function(val) return val == 1 and 'stud' or 'studs' end,
-        Tooltip = 'Só mira se a bola estiver dentro desse range'
+        Tooltip = 'Raio de reação ao tackle inimigo'
     })
 
-    OnlyWithoutBall = ManualHeaderTackle:CreateToggle({
-        Name = 'Only Without Ball',
-        Default = false,
-        Tooltip = 'Só dispara se você NÃO estiver com a bola'
+    ShootBypass = HeaderShield:CreateToggle({
+        Name = 'Shoot Bypass',
+        Default = true,
+        Tooltip = 'Permite chutar enquanto o Header estiver ativo'
+    })
+
+    AutoActivate = HeaderShield:CreateToggle({
+        Name = 'Only With Enemy Near',
+        Default = true,
+        Tooltip = '[Modo Normal] Só ativa se houver oponente por perto',
+        Function = function(val)
+            if Distance and Distance.Object then
+                Distance.Object.Visible = val
+            end
+        end,
+    })
+
+    Distance = HeaderShield:CreateSlider({
+        Name = 'Enemy Detect Range',
+        Min = 5, Max = 30, Default = 15,
+        Suffix = function(val) return val == 1 and 'stud' or 'studs' end,
     })
 end)
 
