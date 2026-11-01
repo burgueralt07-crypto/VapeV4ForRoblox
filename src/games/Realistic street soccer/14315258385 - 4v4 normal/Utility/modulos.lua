@@ -3985,6 +3985,55 @@ run(function()
 end)
 
 run(function()
+    local TackleDribble
+    local ReplicatedStorage = game:GetService('ReplicatedStorage')
+    local ActionRemote = ReplicatedStorage:WaitForChild('Remotes', 10) and ReplicatedStorage.Remotes:FindFirstChild('Action')
+
+    local isEnabled = false
+    local TACKLE_DURATION = 0.65 -- Duração física padrão do tackle no jogo
+
+    local function triggerDribbleDelay()
+        local char = lplr.Character
+        local bools = char and char:FindFirstChild('Bools')
+        local dd = bools and bools:FindFirstChild('dribbleDelay')
+
+        if dd then
+            dd.Value = true
+            task.delay(TACKLE_DURATION, function()
+                if dd and dd.Parent then
+                    dd.Value = false
+                end
+            end)
+        end
+    end
+
+    if hookmetamethod then
+        local oldNamecall
+        oldNamecall = hookmetamethod(game, '__namecall', function(self, ...)
+            local method = getnamecallmethod()
+            local args = {...}
+
+            if isEnabled and self == ActionRemote and (method == 'FireServer' or method == 'fireServer') then
+                local action = tostring(args[1])
+                if action == 'TackIe' or action == 'Tackle' then
+                    task.spawn(triggerDribbleDelay)
+                end
+            end
+
+            return oldNamecall(self, ...)
+        end)
+    end
+
+    TackleDribble = vape.Categories.realista:CreateModule({
+        Name = 'TackleDribble',
+        Function = function(callback)
+            isEnabled = callback
+        end,
+        Tooltip = 'Seta dribbleDelay como true durante os 0.65s padrão do tackle.'
+    })
+end)
+
+run(function()
     local AerialReach
     local ServerMode
     local Range
@@ -5892,6 +5941,7 @@ end)
 
 run(function()
     local HeaderShield
+    local Mode
     local OnlyWithBall
     local ReactiveMode
     local ReactiveDistance
@@ -5901,6 +5951,7 @@ run(function()
 
     local Players = game:GetService('Players')
     local ReplicatedStorage = game:GetService('ReplicatedStorage')
+    local UserInputService = game:GetService('UserInputService')
     local runService = game:GetService('RunService')
 
     local TACKLE_ANIM_ID = '14317040670'
@@ -5918,16 +5969,21 @@ run(function()
     local mainConn = nil
     local charConn = nil
     local headerChangedConn = nil
+    local humStateConn = nil
+    local humFloorConn = nil
+    local jumpReqConn = nil
     local enemyWatchers = {}
 
     local cachedChar = nil
     local cachedRoot = nil
+    local cachedHum = nil
     local cachedBall = nil
     local cachedBallWeld = nil
     local headerBool = nil
 
     local enemyList = {}
 
+    local isJumping = false
     local shieldingActive = false
     local lastFire = 0
     local tackleDetectedUntil = 0
@@ -5944,19 +6000,6 @@ run(function()
         return headerBool.Value
     end
 
-    local function rebuildCharCache()
-        cachedChar = lplr.Character
-        if not cachedChar then
-            cachedRoot = nil
-            headerBool = nil
-            return
-        end
-
-        cachedRoot = cachedChar:FindFirstChild('HumanoidRootPart')
-        local bools = cachedChar:FindFirstChild('Bools')
-        headerBool = bools and bools:FindFirstChild('Header')
-    end
-
     local function getBall()
         if cachedBall and cachedBall.Parent then
             return cachedBall
@@ -5965,7 +6008,7 @@ run(function()
         cachedBall = nil
         cachedBallWeld = nil
 
-        for _, obj in workspace:GetChildren() do
+        for _, obj in ipairs(workspace:GetChildren()) do
             if obj:IsA('BasePart') and obj.Name:lower() == 'ball' then
                 cachedBall = obj
                 return obj
@@ -6012,19 +6055,23 @@ run(function()
             if not enemyRoot then continue end
 
             local diff = enemyRoot.Position - myPos
-            if diff.X * diff.X + diff.Y * diff.Y + diff.Z * diff.Z <= rangeSq then
+            if (diff.X * diff.X + diff.Y * diff.Y + diff.Z * diff.Z) <= rangeSq then
                 return true
             end
         end
         return false
     end
 
+    local function fireHeader()
+        ActionRemote:FireServer('Header')
+        lastFire = tick()
+        _G.__LastShieldHeaderTime = tick()
+        buffExpiresAt = tick() + BUFF_DURATION_ESTIMATE
+    end
+
     local function shouldBeActive()
         if not cachedChar or not cachedChar.Parent then return false end
-
-        local hum = cachedChar:FindFirstChildOfClass('Humanoid')
-        if not hum or hum.Health <= 0 then return false end
-
+        if not cachedHum or cachedHum.Health <= 0 then return false end
         if not headerBool then return false end
 
         -- PAUSA quando AerialReach está executando cabeceio aéreo
@@ -6033,6 +6080,12 @@ run(function()
 
         if OnlyWithBall.Enabled and not hasBall() then return false end
 
+        -- MODO ONLY JUMP: só ativa enquanto estiver no ar pelo pulo
+        if Mode.Value == 'Only Jump' then
+            return isJumping
+        end
+
+        -- MODO NORMAL:
         if ReactiveMode.Enabled then
             return tick() <= tackleDetectedUntil
         end
@@ -6042,11 +6095,53 @@ run(function()
         return true
     end
 
-    local function fireHeader()
-        ActionRemote:FireServer('Header')
-        lastFire = tick()
-        _G.__LastShieldHeaderTime = tick()
-        buffExpiresAt = tick() + BUFF_DURATION_ESTIMATE
+    local function checkInstantTrigger()
+        if shouldBeActive() and not getRealHeaderValue() and (tick() - lastFire >= FIRE_COOLDOWN) then
+            fireHeader()
+        end
+    end
+
+    local function setupHumListeners(hum)
+        if humStateConn then humStateConn:Disconnect() end
+        if humFloorConn then humFloorConn:Disconnect() end
+
+        humStateConn = hum.StateChanged:Connect(function(oldState, newState)
+            if newState == Enum.HumanoidStateType.Jumping then
+                isJumping = true
+                if Mode.Value == 'Only Jump' then
+                    task.spawn(checkInstantTrigger)
+                end
+            elseif newState == Enum.HumanoidStateType.Landed or newState == Enum.HumanoidStateType.Running then
+                isJumping = false
+            end
+        end)
+
+        -- Fail-safe instantâneo ao tocar no chão
+        humFloorConn = hum:GetPropertyChangedSignal("FloorMaterial"):Connect(function()
+            if hum.FloorMaterial ~= Enum.Material.Air then
+                isJumping = false
+            end
+        end)
+    end
+
+    local function rebuildCharCache()
+        cachedChar = lplr.Character
+        if not cachedChar then
+            cachedRoot = nil
+            cachedHum = nil
+            headerBool = nil
+            isJumping = false
+            return
+        end
+
+        cachedRoot = cachedChar:FindFirstChild('HumanoidRootPart')
+        cachedHum = cachedChar:FindFirstChildOfClass('Humanoid')
+        local bools = cachedChar:FindFirstChild('Bools')
+        headerBool = bools and bools:FindFirstChild('Header')
+
+        if cachedHum then
+            setupHumListeners(cachedHum)
+        end
     end
 
     local function addEnemy(plr)
@@ -6076,11 +6171,11 @@ run(function()
 
             local conn = hum.AnimationPlayed:Connect(function(track)
                 if not HeaderShield.Enabled then return end
+                if Mode.Value == 'Only Jump' then return end -- No modo Only Jump não precisa avaliar tackle inimigo
                 if plr.Team == lplr.Team then return end
 
                 local anim = track.Animation
-                if not anim then return end
-                if not anim.AnimationId:find(TACKLE_ANIM_ID) then return end
+                if not anim or not anim.AnimationId:find(TACKLE_ANIM_ID) then return end
 
                 if not cachedRoot then return end
                 local enemyRoot = char:FindFirstChild('HumanoidRootPart')
@@ -6114,15 +6209,9 @@ run(function()
                and key == 'Value'
                and self == headerBool then
 
-                -- Durante AerialReach, devolve o valor REAL (não bloqueia cabeceio aéreo)
                 if _G.__AerialReachActive then
                     return oldIndex(self, key)
                 end
-
-                -- ⬇️ GATE REMOVIDO: era isso que travava o tackle após o toque.
-                -- if OnlyWithBall and OnlyWithBall.Enabled and not hasBall() then
-                --     return oldIndex(self, key)
-                -- end
 
                 return false
             end
@@ -6162,8 +6251,9 @@ run(function()
 
                 enemyList = {}
                 enemyWatchers = {}
+                isJumping = false
 
-                for _, plr in Players:GetPlayers() do
+                for _, plr in ipairs(Players:GetPlayers()) do
                     addEnemy(plr)
                 end
 
@@ -6179,7 +6269,16 @@ run(function()
                 installShootBypass()
                 setupHeaderWatcher()
 
-                for _, plr in Players:GetPlayers() do
+                -- Gatilho de input antecipado (dispara antes do pulo elevar o personagem)
+                jumpReqConn = UserInputService.JumpRequest:Connect(function()
+                    if not HeaderShield.Enabled or Mode.Value ~= 'Only Jump' then return end
+                    if cachedHum and cachedHum.FloorMaterial ~= Enum.Material.Air and cachedHum.Health > 0 then
+                        isJumping = true
+                        task.spawn(checkInstantTrigger)
+                    end
+                end)
+
+                for _, plr in ipairs(Players:GetPlayers()) do
                     watchEnemyTackles(plr)
                 end
 
@@ -6215,8 +6314,7 @@ run(function()
                         return
                     end
 
-                    local hum = cachedChar:FindFirstChildOfClass('Humanoid')
-                    if not hum or hum.Health <= 0 then
+                    if not cachedHum or cachedHum.Health <= 0 then
                         shieldingActive = false
                         return
                     end
@@ -6240,6 +6338,9 @@ run(function()
                 if mainConn then mainConn:Disconnect() mainConn = nil end
                 if headerChangedConn then headerChangedConn:Disconnect() headerChangedConn = nil end
                 if charConn then charConn:Disconnect() charConn = nil end
+                if humStateConn then humStateConn:Disconnect() humStateConn = nil end
+                if humFloorConn then humFloorConn:Disconnect() humFloorConn = nil end
+                if jumpReqConn then jumpReqConn:Disconnect() jumpReqConn = nil end
 
                 for _, conn in pairs(enemyWatchers) do
                     conn:Disconnect()
@@ -6247,25 +6348,33 @@ run(function()
                 enemyWatchers = {}
                 enemyList = {}
 
+                isJumping = false
                 shieldingActive = false
                 buffExpiresAt = 0
                 cachedBall = nil
                 cachedBallWeld = nil
             end
         end,
-        Tooltip = 'Spamma Header pra manter buff de invencibilidade. Conectado ao AerialReach via _G.'
+        Tooltip = 'Garante invencibilidade via Header. Suporta modo Normal ou reativo apenas ao Pular.'
+    })
+
+    Mode = HeaderShield:CreateDropdown({
+        Name = 'Mode',
+        List = {'Normal', 'Only Jump'},
+        Default = 'Normal',
+        Tooltip = 'Normal: regras habituais de proximidade/tackle | Only Jump: ativa instantaneamente no pulo e desliga ao pousar'
     })
 
     OnlyWithBall = HeaderShield:CreateToggle({
         Name = 'Only With Ball',
         Default = true,
-        Tooltip = 'So ativa quando com bola'
+        Tooltip = 'Só ativa quando você estiver com a bola (funciona em ambos os modos)'
     })
 
     ReactiveMode = HeaderShield:CreateToggle({
         Name = 'Reactive Mode',
         Default = false,
-        Tooltip = 'Ativa apenas quando detecta tackle proximo',
+        Tooltip = '[Modo Normal] Ativa apenas quando detecta tackle próximo',
         Function = function(val)
             if ReactiveDistance and ReactiveDistance.Object then
                 ReactiveDistance.Object.Visible = val
@@ -6278,18 +6387,19 @@ run(function()
         Min = 5, Max = 30, Default = 15,
         Visible = false,
         Suffix = function(val) return val == 1 and 'stud' or 'studs' end,
-        Tooltip = 'Range de deteccao no modo reactive'
+        Tooltip = 'Raio de reação ao tackle inimigo'
     })
 
     ShootBypass = HeaderShield:CreateToggle({
         Name = 'Shoot Bypass',
         Default = true,
-        Tooltip = 'Permite chutar com Header ativo'
+        Tooltip = 'Permite chutar enquanto o Header estiver ativo'
     })
 
     AutoActivate = HeaderShield:CreateToggle({
         Name = 'Only With Enemy Near',
         Default = true,
+        Tooltip = '[Modo Normal] Só ativa se houver oponente por perto',
         Function = function(val)
             if Distance and Distance.Object then
                 Distance.Object.Visible = val
@@ -6766,48 +6876,47 @@ end)
 
 run(function()
     local NoDebounce
-    local Players = game:GetService('Players')
-    local lplr = Players.LocalPlayer
-    
-    local targetDebounce = nil
+    local BypassTackle
+    local isEnabled = false
 
-    local function updateTarget(char)
-        targetDebounce = nil
-        if not char then return end
-        local bools = char:WaitForChild("Bools", 5)
-        if bools then
-            local db = bools:WaitForChild("Debounce", 5)
-            if db and db:IsA("BoolValue") then
-                targetDebounce = db
+    local blockedDebounces = {
+        ['Debounce'] = true,
+        ['dribbleDebounce'] = true,
+    }
+
+    if hookmetamethod then
+        local oldIndex
+        oldIndex = hookmetamethod(game, '__index', function(self, index)
+            if isEnabled and not checkcaller() and typeof(self) == 'Instance' and index == 'Value' then
+                local name = self.Name
+
+                if blockedDebounces[name] then
+                    return false
+                end
+
+                if BypassTackle and BypassTackle.Enabled and name == 'TackleDebounce' then
+                    return false
+                end
             end
-        end
-    end
 
-    local oldIndex
-    oldIndex = hookmetamethod(game, "__index", function(self, index)
-        if not checkcaller() and self == targetDebounce and index == "Value" then
-            return false
-        end
-        return oldIndex(self, index)
-    end)
+            return oldIndex(self, index)
+        end)
+    else
+        warn("[NoDebounce] Executor sem suporte a hookmetamethod.")
+    end
 
     NoDebounce = vape.Categories.realista:CreateModule({
         Name = 'NoDebounce',
         Function = function(callback)
-            if callback then
-                if lplr.Character then
-                    updateTarget(lplr.Character)
-                end
-                
-                lplr.CharacterAdded:Connect(function(char)
-                    task.wait(0.5)
-                    updateTarget(char)
-                end)
-            else
-                targetDebounce = nil
-            end
+            isEnabled = callback
         end,
-        Tooltip = 'Usa Hooking para retornar sempre False ao ler o Debounce.'
+        Tooltip = 'Anula Debounce e dribbleDebounce retornando sempre False nativamente.'
+    })
+
+    BypassTackle = NoDebounce:CreateToggle({
+        Name = 'No Tackle Cooldown',
+        Default = false,
+        Tooltip = 'Também anula o TackleDebounce para spammar carrinhos.'
     })
 end)
 
