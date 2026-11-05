@@ -249,6 +249,124 @@ run(function()
 end)
 
 run(function()
+    local PingSpoof
+    local FakePing
+    local FakeFPS
+    local Randomize
+
+    local Players = game:GetService('Players')
+    local ReplicatedStorage = game:GetService('ReplicatedStorage')
+    local lplr = Players.LocalPlayer
+
+    local isEnabled = false
+    local hooksInitialized = false
+
+    local PingSend = nil
+    local PINGNORE = nil
+    local oldNamecall = nil
+    local guiThread = nil
+
+    local function getFakePing()
+        local base = FakePing.Value
+        if Randomize.Enabled then
+            return math.clamp(base + math.random(-5, 5), 1, 999)
+        end
+        return base
+    end
+
+    local function getFakeFPS()
+        local base = FakeFPS.Value
+        if Randomize.Enabled then
+            return math.clamp(base + math.random(-20, 20), 1, 999)
+        end
+        return base
+    end
+
+    local function initHooks()
+        if hooksInitialized then return end
+        hooksInitialized = true
+
+        PingSend = ReplicatedStorage:WaitForChild("PingSend", 15)
+        local remotes = ReplicatedStorage:WaitForChild("Remotes", 15)
+        PINGNORE = remotes and remotes:WaitForChild("PINGNORE", 15)
+
+        if not PingSend or not PINGNORE then return end
+
+        local wrap = newcclosure or function(f) return f end
+
+        oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+            if isEnabled then
+                local method = getnamecallmethod()
+
+                if self == PingSend and method == "InvokeServer" then
+                    return oldNamecall(self, getFakeFPS(), getFakePing())
+                end
+
+                if self == PINGNORE and method == "FireServer" then
+                    return oldNamecall(self, getFakePing())
+                end
+            end
+
+            return oldNamecall(self, ...)
+        end))
+    end
+
+    PingSpoof = vape.Categories.realista:CreateModule({
+        Name = 'PingSpoof',
+        Function = function(callback)
+            if callback then
+                initHooks()
+                isEnabled = true
+
+                guiThread = task.spawn(function()
+                    while isEnabled and task.wait(0.05) do
+                        pcall(function()
+                            local pg = lplr.PlayerGui:FindFirstChild("Ping")
+                            if not pg then return end
+                            for _, frame in pairs({ pg:FindFirstChild("PC"), pg:FindFirstChild("Mobile") }) do
+                                if frame then
+                                    local p = frame:FindFirstChild("Ping")
+                                    local f = frame:FindFirstChild("FPS")
+                                    if p then p.Text = tostring(getFakePing()) end
+                                    if f then f.Text = tostring(getFakeFPS()) end
+                                end
+                            end
+                        end)
+                    end
+                end)
+            else
+                isEnabled = false
+                if guiThread then
+                    task.cancel(guiThread)
+                    guiThread = nil
+                end
+            end
+        end,
+        Tooltip = 'Spoofa Ping e FPS no !ping all para os outros jogadores.'
+    })
+
+    FakePing = PingSpoof:CreateSlider({
+        Name = 'Fake Ping',
+        Min = 1, Max = 300, Default = 15,
+        Suffix = function(val) return ' ms' end,
+        Tooltip = 'Valor base do ping falso enviado ao servidor.'
+    })
+
+    FakeFPS = PingSpoof:CreateSlider({
+        Name = 'Fake FPS',
+        Min = 1, Max = 240, Default = 60,
+        Suffix = function(val) return ' fps' end,
+        Tooltip = 'Valor base do FPS falso enviado ao servidor.'
+    })
+
+    Randomize = PingSpoof:CreateToggle({
+        Name = 'Randomize',
+        Default = false,
+        Tooltip = 'Adiciona oscilacao natural: +/-5 no ping e +/-20 no FPS a cada envio.'
+    })
+end)
+        
+run(function()
     local AutoDribble
     local SafeRadius
     local DangerRadius
